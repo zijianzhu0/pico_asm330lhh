@@ -1,0 +1,3 @@
+[submodule "myproject/asm330lhh-pid"]
+	path = myproject/asm330lhh-pid
+	url = https://github.com/STMicroelectronics/asm330lhh-pid.git
