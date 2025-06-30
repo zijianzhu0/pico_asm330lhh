@@ -6,6 +6,8 @@
 #include "hardware/spi.h"
 #include "pico/cyw43_arch.h"
 #include "hardware/uart.h"
+#include "asm330lhh-pid/asm330lhh_reg.h"
+
 
 // SPI Defines
 // We are going to use SPI 0, and allocate it to the following GPIO pins
@@ -36,7 +38,7 @@ void interrupt1_handler(uint gpio, uint32_t events) {
         printf("Interrupt 1 Handler\n");
     }
 }
-void interrupt1_handler(uint gpio, uint32_t events) {
+void interrupt2_handler(uint gpio, uint32_t events) {
     if (events & GPIO_IRQ_EDGE_RISE) {
         // uart_puts(UART_ID, "Got an interrupt!\n");
         printf("Interrupt 2 Handler\n");
@@ -53,11 +55,19 @@ int main()
     }
 
     // SPI initialisation. This example will use SPI at 1MHz.
-    spi_init(SPI_PORT, 1000*1000);
+    
+    spi_set_format(SPI_PORT, 
+                    8,              // 8 bits per word
+                    SPI_CPHA_1,     // clock idle high
+                    SPI_CPOL_1,     // sample on second edge
+                    SPI_MSB_FIRST); // MSB first
     gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
     gpio_set_function(PIN_CS,   GPIO_FUNC_SIO);
     gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
     gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
+    spi_set_slave(SPI_PORT, false); // Set as master
+    // Set the SPI baud rate to 1MHz
+    spi_init(SPI_PORT, 1000*1000);
     
     // Chip select is active-low, so we'll initialise it to a driven-high state
     gpio_set_dir(PIN_CS, GPIO_OUT);
