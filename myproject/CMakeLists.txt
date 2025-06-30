@@ -35,7 +35,12 @@ pico_sdk_init()
 
 # Add executable. Default name is the project name, version 0.1
 
-add_executable(myproject myproject.c )
+add_executable(myproject)
+
+target_sources(myproject PRIVATE
+    myproject.c
+    asm330lhh-pid/asm330lhh_reg.c
+)
 
 pico_set_program_name(myproject "myproject")
 pico_set_program_version(myproject "0.1")

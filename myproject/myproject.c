@@ -1,6 +1,8 @@
 #include <hardware/gpio.h>
 #include <hardware/irq.h>
+#include <pico/types.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
@@ -44,18 +46,9 @@ void interrupt2_handler(uint gpio, uint32_t events) {
         printf("Interrupt 2 Handler\n");
     }
 }
-int main()
-{
-    stdio_init_all();
 
-    // Initialise the Wi-Fi chip
-    if (cyw43_arch_init()) {
-        printf("Wi-Fi init failed\n");
-        return -1;
-    }
-
-    // SPI initialisation. This example will use SPI at 1MHz.
-    
+void asm330lhh_spi_init(void) {
+    spi_init(SPI_PORT, 1000*1000); // 1 MHz, enable SPI hardware first
     spi_set_format(SPI_PORT, 
                     8,              // 8 bits per word
                     SPI_CPHA_1,     // clock idle high
@@ -66,28 +59,56 @@ int main()
     gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
     gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
     spi_set_slave(SPI_PORT, false); // Set as master
-    // Set the SPI baud rate to 1MHz
-    spi_init(SPI_PORT, 1000*1000);
-    
     // Chip select is active-low, so we'll initialise it to a driven-high state
     gpio_set_dir(PIN_CS, GPIO_OUT);
     gpio_put(PIN_CS, 1);
-    // For more examples of SPI use see https://github.com/raspberrypi/pico-examples/tree/master/spi
+}
 
-    // Example to turn on the Pico W LED
-    cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);
+int32_t pico_asm330lhh_read_reg(void *handle, uint8_t reg, uint8_t *data, uint16_t len) {
+    // Set the CS pin low to start communication
+    gpio_put(PIN_CS, 0);
+    // Send the register address with the read bit set
+    spi_write_read_blocking(SPI_PORT, &reg, data, len);
+    // Set the CS pin high to end communication
+    gpio_put(PIN_CS, 1);
+    return 0; // Return success
+}
+
+int32_t pico_asm330lhh_write_reg(void *handle, uint8_t reg, const uint8_t *data, uint16_t len) {
+    // Set the CS pin low to start communication
+    gpio_put(PIN_CS, 0);
+    // Send the register address with the write bit set
+    spi_write_blocking(SPI_PORT, &reg, 1);
+    // Write the data to the register
+    spi_write_blocking(SPI_PORT, data, len);
+    // Set the CS pin high to end communication
+    gpio_put(PIN_CS, 1);
+    return 0; // Return success
+}
+
+int main()
+{
+    stdio_init_all();
+    while (!stdio_usb_connected()) {
+        sleep_ms(10);
+    }
+    asm330lhh_spi_init();
+    printf("ASM330LHH SPI Initialized\n");
+
+    stmdev_ctx_t dev_ctx = {
+        .write_reg = pico_asm330lhh_write_reg,
+        .read_reg = pico_asm330lhh_read_reg,
+        .handle = NULL
+    };
+
+    uint8_t whoami = 0x66;
+    asm330lhh_device_id_get(&dev_ctx, &whoami);
+    printf("Device ID: 0x%02X\n", whoami);
 
     // Set up our UART
     uart_init(UART_ID, BAUD_RATE);
-    // Set the TX and RX pins by using the function select on the GPIO
-    // Set datasheet for more information on function select
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-    
-    // Use some the various UART functions to send out data
-    // In a default system, printf will also output via the default UART
-    
-    // Send out a string, with CR/LF conversions
     uart_puts(UART_ID, " Hello, UART!\n");
     
 
