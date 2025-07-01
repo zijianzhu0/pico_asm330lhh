@@ -15,10 +15,10 @@
 // We are going to use SPI 0, and allocate it to the following GPIO pins
 // Pins can be changed, see the GPIO function select table in the datasheet for information on GPIO assignments
 #define SPI_PORT spi0
-#define PIN_MISO 16
-#define PIN_CS   17
-#define PIN_SCK  18
-#define PIN_MOSI 19
+#define PIN_MISO 4
+#define PIN_CS   5
+#define PIN_SCK  2
+#define PIN_MOSI 3
 
 
 // UART defines
@@ -28,11 +28,16 @@
 
 // Use pins 4 and 5 for UART1
 // Pins can be changed, see the GPIO function select table in the datasheet for information on GPIO assignments
-#define UART_TX_PIN 4
-#define UART_RX_PIN 5
+#define UART_TX_PIN 12
+#define UART_RX_PIN 13
 
 #define INT1_PIN 15
 #define INT2_PIN 16
+
+static uint8_t whoamI, rst;
+static float ts_res = 0.000025; // uncalibrated ts_res is 25us
+static double timestamp_ms; //used for printout
+static uint32_t timestamp;
 
 void interrupt1_handler(uint gpio, uint32_t events) {
     if (events & GPIO_IRQ_EDGE_RISE) {
@@ -60,16 +65,16 @@ void asm330lhh_spi_init(void) {
     gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
     spi_set_slave(SPI_PORT, false); // Set as master
     // Chip select is active-low, so we'll initialise it to a driven-high state
+    gpio_init(PIN_CS);
     gpio_set_dir(PIN_CS, GPIO_OUT);
     gpio_put(PIN_CS, 1);
 }
 
 int32_t pico_asm330lhh_read_reg(void *handle, uint8_t reg, uint8_t *data, uint16_t len) {
-    // Set the CS pin low to start communication
+    reg = reg | 0x80; // Set the MSB for read operation
     gpio_put(PIN_CS, 0);
-    // Send the register address with the read bit set
-    spi_write_read_blocking(SPI_PORT, &reg, data, len);
-    // Set the CS pin high to end communication
+    spi_write_blocking(SPI_PORT, &reg, 1); // Send register address
+    spi_read_blocking(SPI_PORT, 0, data, len); // Read data
     gpio_put(PIN_CS, 1);
     return 0; // Return success
 }
@@ -101,9 +106,45 @@ int main()
         .handle = NULL
     };
 
-    uint8_t whoami = 0x66;
-    asm330lhh_device_id_get(&dev_ctx, &whoami);
-    printf("Device ID: 0x%02X\n", whoami);
+    asm330lhh_device_id_get(&dev_ctx, &whoamI);
+    printf("Device ID: 0x%02X\n", whoamI);
+    
+    if (whoamI != ASM330LHH_ID)
+	  while (1)
+
+	/* Restore default configuration */
+	asm330lhh_reset_set(&dev_ctx, PROPERTY_ENABLE);
+
+	do {
+	  asm330lhh_reset_get(&dev_ctx, &rst);
+	} while (rst);
+	/* Start device configuration. */
+	asm330lhh_device_conf_set(&dev_ctx, PROPERTY_ENABLE);
+	/* Enable Block Data Update */
+	asm330lhh_block_data_update_set(&dev_ctx, PROPERTY_ENABLE);
+	/* Set Output Data Rate */
+	asm330lhh_xl_data_rate_set(&dev_ctx, ASM330LHH_XL_ODR_104Hz);
+	asm330lhh_gy_data_rate_set(&dev_ctx, ASM330LHH_GY_ODR_104Hz);
+	/* Set full scale */
+	asm330lhh_xl_full_scale_set(&dev_ctx, ASM330LHH_2g);
+	asm330lhh_gy_full_scale_set(&dev_ctx, ASM330LHH_250dps);
+	/* Configure filtering chain(No aux interface)
+	 * Accelerometer - LPF1 + LPF2 path
+	 */
+	asm330lhh_xl_hp_path_on_out_set(&dev_ctx, ASM330LHH_LP_ODR_DIV_100);
+	asm330lhh_xl_filter_lp2_set(&dev_ctx, PROPERTY_ENABLE);
+
+	// enable timestamping
+    asm330lhh_timestamp_set(&dev_ctx, PROPERTY_ENABLE);
+    asm330lhh_get_ts_res(&dev_ctx, &ts_res);
+
+    // enable interrupts on INT1 and INT2 pins
+    asm330lhh_pin_int1_route_t int1_route={0};
+    // asm330lhh_pin_int2_route_t int2_route={0};
+    int1_route.int1_ctrl.int1_drdy_xl = PROPERTY_ENABLE;
+    // int2_route.int2_ctrl.int2_drdy_g = PROPERTY_ENABLE;
+    asm330lhh_pin_int1_route_set(&dev_ctx, &int1_route);
+    // asm330lhh_pin_int2_route_set(&dev_ctx, &int2_route);
 
     // Set up our UART
     uart_init(UART_ID, BAUD_RATE);
