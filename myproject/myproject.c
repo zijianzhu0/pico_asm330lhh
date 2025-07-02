@@ -1,5 +1,6 @@
 #include <hardware/gpio.h>
 #include <hardware/irq.h>
+#include <pico/time.h>
 #include <pico/types.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -39,18 +40,8 @@ static float ts_res = 0.000025; // uncalibrated ts_res is 25us
 static double timestamp_ms; //used for printout
 static uint32_t timestamp;
 
-void interrupt1_handler(uint gpio, uint32_t events) {
-    if (events & GPIO_IRQ_EDGE_RISE) {
-        // uart_puts(UART_ID, "Got an interrupt!\n");
-        printf("Interrupt 1 Handler\n");
-    }
-}
-void interrupt2_handler(uint gpio, uint32_t events) {
-    if (events & GPIO_IRQ_EDGE_RISE) {
-        // uart_puts(UART_ID, "Got an interrupt!\n");
-        printf("Interrupt 2 Handler\n");
-    }
-}
+void interrupt1_handler(uint gpio, uint32_t events);
+void interrupt2_handler(uint gpio, uint32_t events);
 
 void asm330lhh_spi_init(void) {
     spi_init(SPI_PORT, 1000*1000); // 1 MHz, enable SPI hardware first
@@ -91,20 +82,20 @@ int32_t pico_asm330lhh_write_reg(void *handle, uint8_t reg, const uint8_t *data,
     return 0; // Return success
 }
 
-int main()
-{
-    stdio_init_all();
-    while (!stdio_usb_connected()) {
-        sleep_ms(10);
-    }
-    asm330lhh_spi_init();
-    printf("ASM330LHH SPI Initialized\n");
-
-    stmdev_ctx_t dev_ctx = {
+stmdev_ctx_t dev_ctx = {
         .write_reg = pico_asm330lhh_write_reg,
         .read_reg = pico_asm330lhh_read_reg,
         .handle = NULL
     };
+
+int main()
+{
+    stdio_init_all();
+    // while (!stdio_usb_connected()) {
+    //     sleep_ms(10);
+    // }
+    asm330lhh_spi_init();
+    printf("ASM330LHH SPI Initialized\n");
 
     asm330lhh_device_id_get(&dev_ctx, &whoamI);
     printf("Device ID: 0x%02X\n", whoamI);
@@ -140,11 +131,19 @@ int main()
 
     // enable interrupts on INT1 and INT2 pins
     asm330lhh_pin_int1_route_t int1_route={0};
-    // asm330lhh_pin_int2_route_t int2_route={0};
+    asm330lhh_pin_int2_route_t int2_route={0};
     int1_route.int1_ctrl.int1_drdy_xl = PROPERTY_ENABLE;
-    // int2_route.int2_ctrl.int2_drdy_g = PROPERTY_ENABLE;
+    int2_route.int2_ctrl.int2_drdy_g = PROPERTY_ENABLE;
     asm330lhh_pin_int1_route_set(&dev_ctx, &int1_route);
-    // asm330lhh_pin_int2_route_set(&dev_ctx, &int2_route);
+    asm330lhh_pin_int2_route_set(&dev_ctx, &int2_route);
+
+    // Directly enable INT1_DRDY_XL and INT2_DRDY_G via register write
+    uint8_t int1_ctrl = 0;
+    uint8_t int2_ctrl = 0;
+    int1_ctrl |= (1 << 0); // INT1_DRDY_XL is bit 0
+    int2_ctrl |= (1 << 1); // INT2_DRDY_G is bit 1
+    pico_asm330lhh_write_reg(NULL, 0x0D, &int1_ctrl, 1); // 0x0D = INT1_CTRL
+    pico_asm330lhh_write_reg(NULL, 0x0E, &int2_ctrl, 1); // 0x0E = INT2_CTRL
 
     // Set up our UART
     uart_init(UART_ID, BAUD_RATE);
@@ -159,8 +158,9 @@ int main()
     gpio_init(INT2_PIN);
     gpio_set_dir(INT1_PIN, GPIO_IN);
     gpio_set_dir(INT2_PIN, GPIO_IN);
-    gpio_pull_down(INT1_PIN);
-    gpio_pull_down(INT2_PIN);
+    gpio_disable_pulls(INT1_PIN);
+    // gpio_pull_down(INT2_PIN); asm330lhh INT2 pin is open drain, do not pull up or down
+    gpio_disable_pulls(INT2_PIN);
 
     gpio_set_irq_enabled_with_callback(INT1_PIN, 
         GPIO_IRQ_EDGE_RISE, 
@@ -176,7 +176,35 @@ int main()
     gpio_set_irq_enabled(INT2_PIN, 
         GPIO_IRQ_EDGE_RISE, 
         true);
-    
     while (true) {
+        // int16_t data_raw_acceleration[3] = {0};
+        // int16_t data_raw_angular_rate[3] = {0};
+        // uint8_t reg;
+        // asm330lhh_xl_flag_data_ready_get(&dev_ctx, &reg);
+        // if (reg) {
+        //     asm330lhh_acceleration_raw_get(&dev_ctx, data_raw_acceleration);
+        // }
+        // reg = 0;
+        // asm330lhh_gy_flag_data_ready_get(&dev_ctx, &reg);
+        // if (reg) {
+        //     asm330lhh_angular_rate_raw_get(&dev_ctx, data_raw_angular_rate);
+        // }
+    }
+}
+
+void interrupt1_handler(uint gpio, uint32_t events) {
+    if (events & GPIO_IRQ_EDGE_RISE) {
+        int16_t data_raw_angular_rate[3];
+        asm330lhh_angular_rate_raw_get(&dev_ctx, data_raw_angular_rate);
+        // uart_puts(UART_ID, "Got an interrupt!\n");
+        printf("Interrupt 1 Handler\n");
+    }
+}
+void interrupt2_handler(uint gpio, uint32_t events) {
+    if (events & GPIO_IRQ_EDGE_RISE) {
+        int16_t data_raw_acceleration[3];
+        asm330lhh_acceleration_raw_get(&dev_ctx, data_raw_acceleration);
+        // uart_puts(UART_ID, "Got an interrupt!\n");
+        printf("Interrupt 2 Handler\n");
     }
 }
