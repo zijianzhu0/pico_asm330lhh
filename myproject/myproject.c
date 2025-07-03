@@ -2,6 +2,7 @@
 #include <hardware/irq.h>
 #include <pico/time.h>
 #include <pico/types.h>
+#include "pico/multicore.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
