@@ -41,6 +41,9 @@ static float ts_res = 0.000025; // uncalibrated ts_res is 25us
 static double timestamp_ms; //used for printout
 static uint32_t timestamp;
 
+static bool int1_ready = false;
+static bool int2_ready = false;
+
 void interrupt1_handler(uint gpio, uint32_t events);
 void interrupt2_handler(uint gpio, uint32_t events);
 
@@ -89,12 +92,10 @@ stmdev_ctx_t dev_ctx = {
         .handle = NULL
     };
 
-int main()
-{
-    stdio_init_all();
-    // while (!stdio_usb_connected()) {
-    //     sleep_ms(10);
-    // }
+void asm330lhh_init(stmdev_ctx_t *ctx) {
+    // This function is a placeholder for device configuration
+    // In this case, we assume the device is already configured
+    // You can add specific configuration code here if needed
     asm330lhh_spi_init();
     printf("ASM330LHH SPI Initialized\n");
 
@@ -146,6 +147,15 @@ int main()
     pico_asm330lhh_write_reg(NULL, 0x0D, &int1_ctrl, 1); // 0x0D = INT1_CTRL
     pico_asm330lhh_write_reg(NULL, 0x0E, &int2_ctrl, 1); // 0x0E = INT2_CTRL
 
+}
+
+int main()
+{
+    stdio_init_all();
+    // while (!stdio_usb_connected()) {
+    //     sleep_ms(10);
+    // }
+    asm330lhh_init(&dev_ctx);
     // Set up our UART
     uart_init(UART_ID, BAUD_RATE);
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
@@ -177,35 +187,38 @@ int main()
     gpio_set_irq_enabled(INT2_PIN, 
         GPIO_IRQ_EDGE_RISE, 
         true);
+
     while (true) {
-        // int16_t data_raw_acceleration[3] = {0};
-        // int16_t data_raw_angular_rate[3] = {0};
-        // uint8_t reg;
-        // asm330lhh_xl_flag_data_ready_get(&dev_ctx, &reg);
-        // if (reg) {
-        //     asm330lhh_acceleration_raw_get(&dev_ctx, data_raw_acceleration);
-        // }
-        // reg = 0;
-        // asm330lhh_gy_flag_data_ready_get(&dev_ctx, &reg);
-        // if (reg) {
-        //     asm330lhh_angular_rate_raw_get(&dev_ctx, data_raw_angular_rate);
-        // }
+        bool int1_pin_state = gpio_get(INT1_PIN);
+        bool int2_pin_state = gpio_get(INT2_PIN);
+        if (int1_ready | int1_pin_state) {
+            int16_t data_raw_angular_rate[3] = {0};
+            asm330lhh_angular_rate_raw_get(&dev_ctx, data_raw_angular_rate);
+            printf("Angular Rate: X=%d, Y=%d, Z=%d\n", 
+                data_raw_angular_rate[0], 
+                data_raw_angular_rate[1], 
+                data_raw_angular_rate[2]);
+            int1_ready = false; // Reset the flag
+        }
+        if (int2_ready | int2_pin_state) {
+            int16_t data_raw_acceleration[3] = {0};
+            asm330lhh_acceleration_raw_get(&dev_ctx, data_raw_acceleration);
+            printf("Acceleration: X=%d, Y=%d, Z=%d\n", 
+                data_raw_acceleration[0], 
+                data_raw_acceleration[1], 
+                data_raw_acceleration[2]);
+            int2_ready = false; // Reset the flag
+        }
     }
 }
 
 void interrupt1_handler(uint gpio, uint32_t events) {
     if (events & GPIO_IRQ_EDGE_RISE) {
-        int16_t data_raw_angular_rate[3];
-        asm330lhh_angular_rate_raw_get(&dev_ctx, data_raw_angular_rate);
-        // uart_puts(UART_ID, "Got an interrupt!\n");
-        printf("Interrupt 1 Handler\n");
+        int1_ready = true; // Set the flag to indicate interrupt 1 was triggered
     }
 }
 void interrupt2_handler(uint gpio, uint32_t events) {
     if (events & GPIO_IRQ_EDGE_RISE) {
-        int16_t data_raw_acceleration[3];
-        asm330lhh_acceleration_raw_get(&dev_ctx, data_raw_acceleration);
-        // uart_puts(UART_ID, "Got an interrupt!\n");
-        printf("Interrupt 2 Handler\n");
+        int2_ready = true; // Set the flag to indicate interrupt 2 was triggered
     }
 }
