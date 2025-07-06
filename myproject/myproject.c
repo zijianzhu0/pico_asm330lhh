@@ -192,21 +192,21 @@ int main()
         bool int1_pin_state = gpio_get(INT1_PIN);
         bool int2_pin_state = gpio_get(INT2_PIN);
         if (int1_ready | int1_pin_state) {
-            int16_t data_raw_angular_rate[3] = {0};
-            asm330lhh_angular_rate_raw_get(&dev_ctx, data_raw_angular_rate);
-            printf("Angular Rate: X=%d, Y=%d, Z=%d\n", 
-                data_raw_angular_rate[0], 
-                data_raw_angular_rate[1], 
-                data_raw_angular_rate[2]);
-            int1_ready = false; // Reset the flag
-        }
-        if (int2_ready | int2_pin_state) {
             int16_t data_raw_acceleration[3] = {0};
             asm330lhh_acceleration_raw_get(&dev_ctx, data_raw_acceleration);
             printf("Acceleration: X=%d, Y=%d, Z=%d\n", 
                 data_raw_acceleration[0], 
                 data_raw_acceleration[1], 
                 data_raw_acceleration[2]);
+            int1_ready = false; // Reset the flag
+        }
+        if (int2_ready | int2_pin_state) {
+            int16_t data_raw_angular_rate[3] = {0};
+            asm330lhh_angular_rate_raw_get(&dev_ctx, data_raw_angular_rate);
+            printf("Angular Rate: X=%d, Y=%d, Z=%d\n", 
+                data_raw_angular_rate[0], 
+                data_raw_angular_rate[1], 
+                data_raw_angular_rate[2]);
             int2_ready = false; // Reset the flag
         }
     }
