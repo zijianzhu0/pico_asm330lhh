@@ -5,7 +5,6 @@
 #include "pico/multicore.h"
 #include <stdbool.h>
 #include <stdint.h>
-#include <stdio.h>
 #include "pico/stdlib.h"
 #include "hardware/spi.h"
 #include "pico/cyw43_arch.h"
@@ -26,15 +25,19 @@
 // UART defines
 // By default the stdout UART is `uart0`, so we will use the second one
 #define UART_ID uart1
-#define BAUD_RATE 115200
+#define BAUD_RATE 1152000
 
 // Use pins 4 and 5 for UART1
 // Pins can be changed, see the GPIO function select table in the datasheet for information on GPIO assignments
-#define UART_TX_PIN 12
-#define UART_RX_PIN 13
+#define UART_TX_PIN 8
+#define UART_RX_PIN 9
 
 #define INT1_PIN 15
 #define INT2_PIN 16
+
+#define PACKET_START 0xAA
+#define TYPE_ACCEL 0x01
+#define TYPE_GYRO  0x02
 
 static uint8_t whoamI, rst;
 static float ts_res = 0.000025; // uncalibrated ts_res is 25us
@@ -44,26 +47,31 @@ static uint32_t timestamp;
 static bool int1_ready = false;
 static bool int2_ready = false;
 
+static uint32_t int1_count = 0;
+static uint32_t int2_count = 0;
+
+static int16_t data_raw_acceleration[3];
+static int16_t data_raw_angular_rate[3];
+
+static float acceleration_mg[3];
+static float angular_rate_mdps[3];
+
 void interrupt1_handler(uint gpio, uint32_t events);
 void interrupt2_handler(uint gpio, uint32_t events);
 
-void asm330lhh_spi_init(void) {
-    spi_init(SPI_PORT, 1000*1000); // 1 MHz, enable SPI hardware first
-    spi_set_format(SPI_PORT, 
-                    8,              // 8 bits per word
-                    SPI_CPHA_1,     // clock idle high
-                    SPI_CPOL_1,     // sample on second edge
-                    SPI_MSB_FIRST); // MSB first
-    gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
-    gpio_set_function(PIN_CS,   GPIO_FUNC_SIO);
-    gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
-    gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
-    spi_set_slave(SPI_PORT, false); // Set as master
-    // Chip select is active-low, so we'll initialise it to a driven-high state
-    gpio_init(PIN_CS);
-    gpio_set_dir(PIN_CS, GPIO_OUT);
-    gpio_put(PIN_CS, 1);
-}
+void flash_led(int times, int duration_ms);
+typedef struct {
+    uint8_t start;
+    uint8_t type;
+    uint32_t timestamp;
+    float data[3];  // X, Y, Z for accel/gyro; [0] for temp
+    uint8_t checksum;
+} __attribute__((packed)) Packet;  // Ensure packed structure\
+
+uint8_t calculate_checksum(Packet *pkt);
+
+void asm330lhh_spi_init(void);
+void asm330lhh_init(stmdev_ctx_t *ctx);
 
 int32_t pico_asm330lhh_read_reg(void *handle, uint8_t reg, uint8_t *data, uint16_t len) {
     reg = reg | 0x80; // Set the MSB for read operation
@@ -91,6 +99,173 @@ stmdev_ctx_t dev_ctx = {
         .read_reg = pico_asm330lhh_read_reg,
         .handle = NULL
     };
+
+
+void core1_entry() {
+    gpio_set_irq_enabled_with_callback(INT2_PIN, 
+        GPIO_IRQ_EDGE_RISE, 
+        true, 
+        &interrupt2_handler);
+    while (true) {
+        sleep_ms(1000);
+        printf("Core 1 alive!  INT1 count: %d, INT2 count: %d\n", int1_count, int2_count);
+        flash_led(2, 100);
+    }
+}
+
+int main()
+{
+    stdio_init_all();
+    sleep_ms(500);
+    // if (cyw43_arch_init()) {
+    //     printf("Wi-Fi init failed");
+    //     return -1;
+    // }
+    // while (!stdio_usb_connected()) {
+    //     sleep_ms(10);
+    // }
+
+    asm330lhh_init(&dev_ctx);
+    // Set up our UART
+    uart_init(UART_ID, BAUD_RATE);
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+    uart_puts(UART_ID, " Hello, UART!\n");
+    
+
+    // Initilize interrupt pins
+    // We will use GPIO 15 and 16 for interrupts
+    gpio_init(INT1_PIN);
+    gpio_init(INT2_PIN);
+    gpio_set_dir(INT1_PIN, GPIO_IN);
+    gpio_set_dir(INT2_PIN, GPIO_IN);
+    gpio_disable_pulls(INT1_PIN);
+    // gpio_pull_down(INT2_PIN); asm330lhh INT2 pin is open drain, do not pull up or down
+    gpio_disable_pulls(INT2_PIN);
+
+    gpio_set_irq_enabled_with_callback(INT1_PIN, 
+        GPIO_IRQ_EDGE_RISE, 
+        true, 
+        &interrupt1_handler);
+    
+    // Launch core 1 to handle INT2
+    multicore_launch_core1(core1_entry);
+
+    while (true) {
+        bool int1_pin_state = gpio_get(INT1_PIN);
+        bool int2_pin_state = gpio_get(INT2_PIN);
+        if (int1_ready | int1_pin_state) {
+            data_raw_acceleration[0] = 0;
+            data_raw_acceleration[1] = 0;
+            data_raw_acceleration[2] = 0;
+            timestamp = 0;
+            asm330lhh_timestamp_raw_get(&dev_ctx, &timestamp);
+            asm330lhh_acceleration_raw_get(&dev_ctx, data_raw_acceleration);
+            acceleration_mg[0] =
+                asm330lhh_from_fs2g_to_mg(data_raw_acceleration[0]);
+            acceleration_mg[1] =
+                asm330lhh_from_fs2g_to_mg(data_raw_acceleration[1]);
+            acceleration_mg[2] =
+                asm330lhh_from_fs2g_to_mg(data_raw_acceleration[2]);
+            Packet accel_pkt = {
+                PACKET_START,
+                TYPE_ACCEL,
+                timestamp,
+                {
+                    acceleration_mg[0],
+                    acceleration_mg[1],
+                    acceleration_mg[2]
+                },
+                0U
+            };
+            accel_pkt.checksum = calculate_checksum(&accel_pkt);
+            uart_write_blocking(UART_ID, (uint8_t *)&accel_pkt, sizeof(accel_pkt));
+            int1_ready = false; // Reset the flag
+        }
+        if (int2_ready | int2_pin_state) {
+            data_raw_angular_rate[0] = 0;
+            data_raw_angular_rate[1] = 0;
+            data_raw_angular_rate[2] = 0;
+            timestamp = 0;
+            asm330lhh_timestamp_raw_get(&dev_ctx, &timestamp);
+            asm330lhh_angular_rate_raw_get(&dev_ctx, data_raw_angular_rate);
+            angular_rate_mdps[0] =
+            asm330lhh_from_fs250dps_to_mdps(data_raw_angular_rate[0]);
+            angular_rate_mdps[1] =
+            asm330lhh_from_fs250dps_to_mdps(data_raw_angular_rate[1]);
+            angular_rate_mdps[2] =
+            asm330lhh_from_fs250dps_to_mdps(data_raw_angular_rate[2]);
+            Packet gyro_pkt = {
+                PACKET_START,
+                TYPE_GYRO,
+                timestamp,
+                {
+                    angular_rate_mdps[0],
+                    angular_rate_mdps[1],
+                    angular_rate_mdps[2]
+                },
+                0U
+            };
+            gyro_pkt.checksum = calculate_checksum(&gyro_pkt);
+            uart_write_blocking(UART_ID, (uint8_t *)&gyro_pkt, sizeof(gyro_pkt));
+            int2_ready = false; // Reset the flag
+        }
+    }
+}
+
+void interrupt1_handler(uint gpio, uint32_t events) {
+    if (events & GPIO_IRQ_EDGE_RISE) {
+        int1_ready = true; // Set the flag to indicate interrupt 1 was triggered
+        // int16_t data_raw_acceleration[3] = {0};
+        // asm330lhh_acceleration_raw_get(&dev_ctx, data_raw_acceleration);
+        int1_count++;
+    }
+}
+void interrupt2_handler(uint gpio, uint32_t events) {
+    if (events & GPIO_IRQ_EDGE_RISE) {
+        int2_ready = true; // Set the flag to indicate interrupt 2 was triggered
+        // int16_t data_raw_angular_rate[3] = {0};
+        // asm330lhh_angular_rate_raw_get(&dev_ctx, data_raw_angular_rate);
+        int2_count++;
+    }
+}
+
+void flash_led(int times, int duration_ms) {
+    for (int i = 0; i < times; i++) {
+        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 1);  
+        sleep_ms(duration_ms);
+        cyw43_arch_gpio_put(CYW43_WL_GPIO_LED_PIN, 0);
+        sleep_ms(duration_ms);
+    }
+}
+
+// XOR Checksum calculation
+uint8_t calculate_checksum(Packet *pkt) {
+    uint8_t *bytes = (uint8_t *)pkt;
+    uint8_t checksum = 0;
+    for (size_t i = 0; i < sizeof(Packet) - 1; i++) {
+        checksum ^= bytes[i];  // XOR all bytes except start and checksum
+    }
+    return checksum;
+}
+
+void asm330lhh_spi_init(void) {
+    spi_init(SPI_PORT, 1000*1000); // 1 MHz, enable SPI hardware first
+    spi_set_format(SPI_PORT, 
+                    8,              // 8 bits per word
+                    SPI_CPHA_1,     // clock idle high
+                    SPI_CPOL_1,     // sample on second edge
+                    SPI_MSB_FIRST); // MSB first
+    gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
+    gpio_set_function(PIN_CS,   GPIO_FUNC_SIO);
+    gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
+    gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
+    spi_set_slave(SPI_PORT, false); // Set as master
+    // Chip select is active-low, so we'll initialise it to a driven-high state
+    gpio_init(PIN_CS);
+    gpio_set_dir(PIN_CS, GPIO_OUT);
+    gpio_put(PIN_CS, 1);
+}
 
 void asm330lhh_init(stmdev_ctx_t *ctx) {
     // This function is a placeholder for device configuration
@@ -147,78 +322,4 @@ void asm330lhh_init(stmdev_ctx_t *ctx) {
     pico_asm330lhh_write_reg(NULL, 0x0D, &int1_ctrl, 1); // 0x0D = INT1_CTRL
     pico_asm330lhh_write_reg(NULL, 0x0E, &int2_ctrl, 1); // 0x0E = INT2_CTRL
 
-}
-
-int main()
-{
-    stdio_init_all();
-    // while (!stdio_usb_connected()) {
-    //     sleep_ms(10);
-    // }
-    asm330lhh_init(&dev_ctx);
-    // Set up our UART
-    uart_init(UART_ID, BAUD_RATE);
-    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
-    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
-    uart_puts(UART_ID, " Hello, UART!\n");
-    
-
-    // Initilize interrupt pins
-    // We will use GPIO 15 and 16 for interrupts
-    gpio_init(INT1_PIN);
-    gpio_init(INT2_PIN);
-    gpio_set_dir(INT1_PIN, GPIO_IN);
-    gpio_set_dir(INT2_PIN, GPIO_IN);
-    gpio_disable_pulls(INT1_PIN);
-    // gpio_pull_down(INT2_PIN); asm330lhh INT2 pin is open drain, do not pull up or down
-    gpio_disable_pulls(INT2_PIN);
-
-    gpio_set_irq_enabled_with_callback(INT1_PIN, 
-        GPIO_IRQ_EDGE_RISE, 
-        true, 
-        &interrupt1_handler);
-    gpio_set_irq_enabled_with_callback(INT2_PIN, 
-        GPIO_IRQ_EDGE_RISE, 
-        true, 
-        &interrupt2_handler);
-    gpio_set_irq_enabled(INT1_PIN, 
-        GPIO_IRQ_EDGE_RISE, 
-        true);
-    gpio_set_irq_enabled(INT2_PIN, 
-        GPIO_IRQ_EDGE_RISE, 
-        true);
-
-    while (true) {
-        bool int1_pin_state = gpio_get(INT1_PIN);
-        bool int2_pin_state = gpio_get(INT2_PIN);
-        if (int1_ready | int1_pin_state) {
-            int16_t data_raw_acceleration[3] = {0};
-            asm330lhh_acceleration_raw_get(&dev_ctx, data_raw_acceleration);
-            printf("Acceleration: X=%d, Y=%d, Z=%d\n", 
-                data_raw_acceleration[0], 
-                data_raw_acceleration[1], 
-                data_raw_acceleration[2]);
-            int1_ready = false; // Reset the flag
-        }
-        if (int2_ready | int2_pin_state) {
-            int16_t data_raw_angular_rate[3] = {0};
-            asm330lhh_angular_rate_raw_get(&dev_ctx, data_raw_angular_rate);
-            printf("Angular Rate: X=%d, Y=%d, Z=%d\n", 
-                data_raw_angular_rate[0], 
-                data_raw_angular_rate[1], 
-                data_raw_angular_rate[2]);
-            int2_ready = false; // Reset the flag
-        }
-    }
-}
-
-void interrupt1_handler(uint gpio, uint32_t events) {
-    if (events & GPIO_IRQ_EDGE_RISE) {
-        int1_ready = true; // Set the flag to indicate interrupt 1 was triggered
-    }
-}
-void interrupt2_handler(uint gpio, uint32_t events) {
-    if (events & GPIO_IRQ_EDGE_RISE) {
-        int2_ready = true; // Set the flag to indicate interrupt 2 was triggered
-    }
 }
