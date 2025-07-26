@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import sys
+import struct
 
 try:
     import serial
@@ -13,6 +14,13 @@ def is_valid_packet(hex_bytes: bytes) -> bool:
     for b in hex_bytes[:-1]:
         checksum ^= b
     return checksum == hex_bytes[-1]
+
+def decode_data(data: bytes):
+    """Unpack bytes 6-17 into three floats and print them to stdout."""
+    # bytes 2-6: timestamp (uint32), bytes 6-18: three floats
+    timestamp = struct.unpack('<I', data[2:6])[0]
+    x, y, z = struct.unpack('<fff', data[6:18])
+    print(f"Timestamp: {timestamp}, Data[0]: {x:.6f}, Data[1]: {y:.6f}, Data[2]: {z:.6f}")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -30,6 +38,11 @@ def main():
         type=int,
         default=115200,               # ← default baud rate
         help="Baud rate (e.g., 115200)"
+    )
+    parser.add_argument(
+        "--decode",
+        action="store_true",
+        help="Also decode and print Data[0]–Data[2] for each packet"
     )
     args = parser.parse_args()
 
@@ -53,9 +66,12 @@ def main():
                 rest = ser.read(18)
                 if len(rest) == 18:
                     packet = b + rest
+                    hex_str = packet.hex().upper()
                     status = "OK" if is_valid_packet(packet) else "BAD"
                     # Print as hex, uppercase, no separators
-                    print(packet.hex().upper() + ' ' + status)
+                    print(f"{hex_str} {status}")
+                    if args.decode and status == "OK":
+                        decode_data(packet)
                 # else: timed out before full packet—just skip and continue
     except KeyboardInterrupt:
         print("\nInterrupted by user. Exiting.")
