@@ -31,6 +31,7 @@
 // Pins can be changed, see the GPIO function select table in the datasheet for information on GPIO assignments
 #define UART_TX_PIN 8
 #define UART_RX_PIN 9
+#define UART_EN_PIN 22
 
 #define INT1_PIN 15
 #define INT2_PIN 16
@@ -117,13 +118,6 @@ int main()
 {
     stdio_init_all();
     sleep_ms(500);
-    // if (cyw43_arch_init()) {
-    //     printf("Wi-Fi init failed");
-    //     return -1;
-    // }
-    // while (!stdio_usb_connected()) {
-    //     sleep_ms(10);
-    // }
 
     asm330lhh_init(&dev_ctx);
     // Set up our UART
@@ -131,6 +125,9 @@ int main()
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
     gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
     uart_puts(UART_ID, " Hello, UART!\n");
+    gpio_init(UART_EN_PIN);
+    gpio_set_dir(UART_EN_PIN, GPIO_OUT);
+    gpio_put(UART_EN_PIN, 1);
     
 
     // Initilize interrupt pins
